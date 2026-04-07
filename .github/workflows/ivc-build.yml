@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-patch:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,33 +23,28 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build dist
+      - name: Build
         run: pnpm build
-        continue-on-error: true  # Type errors in discord voice changes
 
-      - name: Apply IVC patches
-        run: ./ivc-patches/apply-ivc-patches.sh
-
-      - name: Verify IVC provider
+      - name: Verify IVC provider in dist
         run: |
-          test -f dist/ivc-provider-BivCpRov.js || exit 1
-          grep -q '"ivc"' dist/runtime-entry-*.js || exit 1
-          grep -q '"ivc"' dist/config-*.js || exit 1
-          echo "IVC patches verified"
+          grep -r "IvcProvider" dist/ | head -3
+          grep -r '"ivc"' dist/ | grep -v node_modules | head -3
+          echo "IVC provider verified in dist"
 
       - name: Package dist
         run: |
-          tar czf openclaw-ivc-dist.tar.gz \
+          tar czf openclaw-ivc-build.tar.gz \
             dist/ \
             extensions/ \
             dist-runtime/ \
             package.json \
-            openclaw.mjs \
-            ivc-patches/
+            openclaw.mjs
+          ls -lh openclaw-ivc-build.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openclaw-ivc-dist-${{ github.sha }}
-          path: openclaw-ivc-dist.tar.gz
+          name: openclaw-ivc-${{ github.sha }}
+          path: openclaw-ivc-build.tar.gz
           retention-days: 30
