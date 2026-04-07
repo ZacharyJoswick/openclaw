@@ -642,6 +642,25 @@ export class VoiceCallWebhookServer {
     for (const event of events) {
       try {
         this.manager.processEvent(event);
+
+        // Auto-respond to webhook-delivered speech events (IVC provider).
+        // The streaming path (Twilio) calls handleInboundResponse via its
+        // media-stream handler, but the webhook path does not — so we
+        // trigger it here for non-streaming providers like IVC.
+        if (
+          event.type === "call.speech" &&
+          "isFinal" in event &&
+          event.isFinal &&
+          "transcript" in event &&
+          event.transcript
+        ) {
+          const call = this.manager.getCall(event.callId);
+          if (call && (call.direction === "inbound" || (call.metadata as Record<string, unknown>)?.mode === "conversation")) {
+            this.handleInboundResponse(call.callId, event.transcript as string).catch((err) => {
+              console.warn("[voice-call] Failed to auto-respond to webhook speech:", err);
+            });
+          }
+        }
       } catch (err) {
         console.error(`[voice-call] Error processing event ${event.type}:`, err);
       }

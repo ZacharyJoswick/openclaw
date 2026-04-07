@@ -3,3 +3,4 @@ export { MockProvider } from "./mock.js";
 export { TelnyxProvider } from "./telnyx.js";
 export { TwilioProvider } from "./twilio.js";
 export { PlivoProvider } from "./plivo.js";
+export { IvcProvider } from "./ivc.js";

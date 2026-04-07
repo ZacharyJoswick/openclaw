@@ -143,6 +143,10 @@ async function resolveProvider(config: VoiceCallConfig): Promise<VoiceCallProvid
       const { MockProvider } = await import("./providers/mock.js");
       return new MockProvider();
     }
+    case "ivc": {
+      const { IvcProvider } = await import("./providers/ivc.js");
+      return new IvcProvider(config.ivc);
+    }
     default:
       throw new Error(`Unsupported voice-call provider: ${String(config.provider)}`);
   }

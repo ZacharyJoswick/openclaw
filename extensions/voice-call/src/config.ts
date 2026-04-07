@@ -278,8 +278,8 @@ export const VoiceCallConfigSchema = z
     /** Enable voice call functionality */
     enabled: z.boolean().default(false),
 
-    /** Active provider (telnyx, twilio, plivo, or mock) */
-    provider: z.enum(["telnyx", "twilio", "plivo", "mock"]).optional(),
+    /** Active provider (telnyx, twilio, plivo, mock, or ivc) */
+    provider: z.enum(["telnyx", "twilio", "plivo", "mock", "ivc"]).optional(),
 
     /** Telnyx-specific configuration */
     telnyx: TelnyxConfigSchema.optional(),
@@ -289,6 +289,12 @@ export const VoiceCallConfigSchema = z
 
     /** Plivo-specific configuration */
     plivo: PlivoConfigSchema.optional(),
+
+    /** IVC (Intelligent Voice Controller) configuration */
+    ivc: z.object({
+      masterControllerUrl: z.string().optional(),
+      ttsSecret: z.string().optional(),
+    }).strict().optional(),
 
     /** Phone number to call from (E.164) */
     fromNumber: E164Schema.optional(),
@@ -555,7 +561,7 @@ export function validateProviderConfig(config: VoiceCallConfig): {
     errors.push("plugins.entries.voice-call.config.provider is required");
   }
 
-  if (!config.fromNumber && config.provider !== "mock") {
+  if (!config.fromNumber && config.provider !== "mock" && config.provider !== "ivc") {
     errors.push("plugins.entries.voice-call.config.fromNumber is required");
   }
 
