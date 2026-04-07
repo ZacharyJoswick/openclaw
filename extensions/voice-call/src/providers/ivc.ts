@@ -103,6 +103,9 @@ export class IvcProvider implements VoiceCallProvider {
       id: evt.id ?? crypto.randomUUID(),
       callId: evt.callId,
       providerCallId: evt.providerCallId,
+      direction: (evt as Record<string, unknown>).direction as string ?? "inbound",
+      from: (evt as Record<string, unknown>).from as string ?? "+15550000000",
+      to: (evt as Record<string, unknown>).to as string ?? "+15550000000",
       timestamp: evt.timestamp ?? Date.now(),
     };
 
