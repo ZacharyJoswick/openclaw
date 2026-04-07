@@ -654,8 +654,11 @@ export class VoiceCallWebhookServer {
           "transcript" in event &&
           event.transcript
         ) {
-          const call = this.manager.getCall(event.callId);
-          console.log(`[voice-call] Webhook speech auto-respond check: callId=${event.callId} call=${!!call} direction=${call?.direction} transcript="${(event.transcript as string)?.slice(0, 50)}"`);
+          // Look up by providerCallId first (webhook events use our external ID),
+          // then fall back to internal callId.
+          const call = this.manager.getCallByProviderCallId(event.providerCallId ?? "")
+            ?? this.manager.getCall(event.callId);
+          console.log(`[voice-call] Webhook speech auto-respond check: callId=${event.callId} providerCallId=${event.providerCallId} call=${!!call} direction=${call?.direction} transcript="${(event.transcript as string)?.slice(0, 50)}"`);
           if (call && (call.direction === "inbound" || (call.metadata as Record<string, unknown>)?.mode === "conversation")) {
             console.log(`[voice-call] Triggering auto-respond for call ${call.callId}`);
             this.handleInboundResponse(call.callId, event.transcript as string).catch((err) => {
