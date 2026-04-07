@@ -55,7 +55,7 @@ export class IvcProvider implements VoiceCallProvider {
    * LAN-only provider — no webhook signature verification needed.
    */
   verifyWebhook(_ctx: WebhookContext): WebhookVerificationResult {
-    return { ok: true };
+    return { ok: true, verifiedRequestKey: "ivc-local" };
   }
 
   /**
