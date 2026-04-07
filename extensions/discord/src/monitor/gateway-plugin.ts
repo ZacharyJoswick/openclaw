@@ -270,10 +270,10 @@ function createGatewayPlugin(params: {
     }
 
     override createWebSocket(url: string) {
-      if (!params.wsAgent) {
-        return super.createWebSocket(url);
-      }
       const WebSocketCtor = params.testing?.webSocketCtor ?? ws.default;
+      if (!params.wsAgent) {
+        return new WebSocketCtor(url);
+      }
       return new WebSocketCtor(url, { agent: params.wsAgent });
     }
   }

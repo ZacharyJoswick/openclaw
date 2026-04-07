@@ -1014,6 +1014,97 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       });
       voiceManagerRef.current = voiceManager;
       registerDiscordListener(client.listeners, new DiscordVoiceReadyListener(voiceManager));
+
+      // Forward VOICE_STATE_UPDATE and VOICE_SERVER_UPDATE from Carbon gateway
+      // to @discordjs/voice adapters stored in the VoicePlugin.
+      const { VoicePlugin } = await import("@buape/carbon/voice");
+      const voicePlugin = client.getPlugin<InstanceType<typeof VoicePlugin>>("voice");
+      if (voicePlugin) {
+        client.listeners.push({
+          type: "VOICE_STATE_UPDATE" as never,
+          parseRawData(data: Record<string, unknown>) {
+            return data;
+          },
+          async handle(data: Record<string, unknown>) {
+            const guildId = data?.guild_id as string | undefined;
+            if (!guildId) return;
+            const adapter = voicePlugin.adapters.get(guildId);
+            if (adapter) {
+              adapter.onVoiceStateUpdate({
+                ...data,
+                self: data?.user_id === client.options.clientId,
+              } as never);
+            }
+          },
+        } as never);
+        client.listeners.push({
+          type: "VOICE_SERVER_UPDATE" as never,
+          parseRawData(data: Record<string, unknown>) {
+            return data;
+          },
+          async handle(data: Record<string, unknown>) {
+            const guildId = data?.guild_id as string | undefined;
+            if (!guildId) return;
+            const adapter = voicePlugin.adapters.get(guildId);
+            if (adapter) {
+              adapter.onVoiceServerUpdate(data as never);
+            }
+          },
+        } as never);
+      }
+
+      // Watch for bot's own messages in voice channels and auto-TTS them.
+      // Debounce: accumulate message chunks until the bot stops sending (3s gap),
+      // then synthesize the full response as one TTS audio file.
+      const ttsDebounceTimers = new Map<
+        string,
+        { timer: ReturnType<typeof setTimeout>; parts: string[] }
+      >();
+      client.listeners.push({
+        type: "MESSAGE_CREATE" as never,
+        parseRawData(data: Record<string, unknown>) {
+          return data;
+        },
+        async handle(data: Record<string, unknown>) {
+          const authorId = (data?.author as Record<string, unknown>)?.id as string | undefined;
+          const channelId = data?.channel_id as string | undefined;
+          const content = data?.content as string | undefined;
+          if (!authorId || !channelId || !content) return;
+          if (authorId !== client.options.clientId) return;
+          // Skip voice pipeline messages (emoji prefixed)
+          if (
+            content.startsWith("\u{1F399}") ||
+            content.startsWith("\u{1F99C}") ||
+            content.startsWith("\u{1F50A}")
+          )
+            return;
+          const mgr = voiceManagerRef.current;
+          if (!mgr) return;
+          const match = mgr.findSessionByChannelId(channelId);
+          if (!match) return;
+
+          // Debounce: accumulate parts, fire TTS after 3s of no new messages
+          const existing = ttsDebounceTimers.get(channelId);
+          if (existing) {
+            clearTimeout(existing.timer);
+            existing.parts.push(content);
+          }
+          const entry = existing ?? {
+            timer: undefined as unknown as ReturnType<typeof setTimeout>,
+            parts: [content],
+          };
+          entry.timer = setTimeout(() => {
+            ttsDebounceTimers.delete(channelId);
+            const fullText = entry.parts.join("\n").trim();
+            if (fullText) {
+              void mgr.playTtsForTextReply(match.guildId, fullText);
+            }
+          }, 3_000);
+          if (!existing) {
+            ttsDebounceTimers.set(channelId, entry);
+          }
+        },
+      } as never);
     }
 
     const messageHandler = discordProviderSessionRuntime.createDiscordMessageHandler({

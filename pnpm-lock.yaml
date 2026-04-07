@@ -26,6 +26,11 @@ overrides:
 
 packageExtensionsChecksum: sha256-n+P/SQo4Pf+dHYpYn1Y6wL4cJEVoVzZ835N0OEp4TM8=
 
+patchedDependencies:
+  '@buape/carbon':
+    hash: ecf20bcfbc091633153ac6138a2df5e28b9b2a54d907980108877bfe37701356
+    path: patches/@buape__carbon.patch
+
 importers:
 
   .:
@@ -301,6 +306,8 @@ importers:
 
   extensions/cloudflare-ai-gateway: {}
 
+  extensions/comfy: {}
+
   extensions/copilot-proxy: {}
 
   extensions/deepgram: {}
@@ -362,7 +369,7 @@ importers:
     dependencies:
       '@buape/carbon':
         specifier: 0.14.0
-        version: 0.14.0(@discordjs/opus@0.10.0)(hono@4.12.10)(opusscript@0.1.1)
+        version: 0.14.0(patch_hash=ecf20bcfbc091633153ac6138a2df5e28b9b2a54d907980108877bfe37701356)(@discordjs/opus@0.10.0)(hono@4.12.10)(opusscript@0.1.1)
       '@discordjs/voice':
         specifier: ^0.19.2
         version: 0.19.2(@discordjs/opus@0.10.0)(@emnapi/core@1.8.1)(@emnapi/runtime@1.9.1)(opusscript@0.1.1)
@@ -724,6 +731,8 @@ importers:
         version: link:../..
 
   extensions/volcengine: {}
+
+  extensions/vydra: {}
 
   extensions/whatsapp:
     dependencies:
@@ -7449,7 +7458,7 @@ snapshots:
     dependencies:
       css-tree: 3.2.1
 
-  '@buape/carbon@0.14.0(@discordjs/opus@0.10.0)(hono@4.12.10)(opusscript@0.1.1)':
+  '@buape/carbon@0.14.0(patch_hash=ecf20bcfbc091633153ac6138a2df5e28b9b2a54d907980108877bfe37701356)(@discordjs/opus@0.10.0)(hono@4.12.10)(opusscript@0.1.1)':
     dependencies:
       '@types/node': 25.5.2
       discord-api-types: 0.38.37

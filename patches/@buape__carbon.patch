@@ -1,0 +1,40 @@
+diff --git a/dist/src/plugins/gateway/GatewayPlugin.js b/dist/src/plugins/gateway/GatewayPlugin.js
+index c50ca2ff5d521dfeff558f9da635142b89bd0472..66c6599cdaaba18cc970f9050588e8d66afaacd5 100644
+--- a/dist/src/plugins/gateway/GatewayPlugin.js
++++ b/dist/src/plugins/gateway/GatewayPlugin.js
+@@ -103,6 +103,7 @@ export class GatewayPlugin extends Plugin {
+     }
+     disconnect() {
+         stopHeartbeat(this);
++        this.lastHeartbeatAck = true;
+         this.monitor.resetUptime();
+         this.ws?.close();
+         this.ws = null;
+@@ -126,7 +127,6 @@ export class GatewayPlugin extends Plugin {
+         let closed = false;
+         this.ws.on("open", () => {
+             this.isConnecting = false;
+-            this.reconnectAttempts = 0;
+             this.emitter.emit("debug", "WebSocket connection opened");
+         });
+         this.ws.on("message", (data) => {
+@@ -202,6 +202,7 @@ export class GatewayPlugin extends Plugin {
+                             if (!this.options.eventFilter || this.options.eventFilter?.(t1)) {
+                                 if (t1 === "READY" || t1 === "RESUMED") {
+                                     this.isConnected = true;
++                                    this.reconnectAttempts = 0;
+                                 }
+                                 if (t1 === "READY") {
+                                     const readyData = d;
+diff --git a/dist/src/plugins/gateway/utils/heartbeat.js b/dist/src/plugins/gateway/utils/heartbeat.js
+index d842d506456cb8318f6e39097203ede6edfaa8f0..d98fe04f8499f56ab872b5133a95138bf0b62c76 100644
+--- a/dist/src/plugins/gateway/utils/heartbeat.js
++++ b/dist/src/plugins/gateway/utils/heartbeat.js
+@@ -1,6 +1,7 @@
+ import { GatewayOpcodes } from "../types.js";
+ export function startHeartbeat(manager, options) {
+     stopHeartbeat(manager);
++    manager.lastHeartbeatAck = true;
+     const jitter = Math.random();
+     const initialDelay = Math.floor(options.interval * jitter);
+     const interval = options.interval;

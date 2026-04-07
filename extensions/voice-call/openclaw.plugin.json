@@ -164,7 +164,7 @@
       },
       "provider": {
         "type": "string",
-        "enum": ["telnyx", "twilio", "plivo", "mock"]
+        "enum": ["telnyx", "twilio", "plivo", "mock", "ivc"]
       },
       "telnyx": {
         "type": "object",
@@ -696,6 +696,18 @@
       "responseTimeoutMs": {
         "type": "integer",
         "minimum": 1
+      },
+      "ivc": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "masterControllerUrl": {
+            "type": "string"
+          },
+          "ttsSecret": {
+            "type": "string"
+          }
+        }
       }
     }
   }

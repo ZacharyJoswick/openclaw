@@ -29,7 +29,7 @@ const require = createRequire(import.meta.url);
 const SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
 const BIT_DEPTH = 16;
-const MIN_SEGMENT_SECONDS = 0.35;
+const MIN_SEGMENT_SECONDS = 1.5;
 const SILENCE_DURATION_MS = 1_000;
 const VOICE_CONNECT_READY_TIMEOUT_MS = 15_000;
 const PLAYBACK_READY_TIMEOUT_MS = 60_000;
@@ -58,6 +58,7 @@ type VoiceSessionEntry = {
   channelId: string;
   channelName?: string;
   sessionChannelId: string;
+  textChannelId?: string;
   route: ReturnType<typeof resolveAgentRoute>;
   connection: import("@discordjs/voice").VoiceConnection;
   player: import("@discordjs/voice").AudioPlayer;
@@ -220,18 +221,109 @@ function scheduleTempCleanup(tempDir: string, delayMs: number = 30 * 60 * 1000):
   timer.unref();
 }
 
+const WHISPER_HALLUCINATIONS = new Set([
+  "you're welcome",
+  "thank you",
+  "thanks for watching",
+  "bye",
+  "goodbye",
+  "thank you for watching",
+  "thanks",
+  "you",
+]);
+
+async function convertToMono16k(inputPath: string): Promise<string> {
+  const { execFileSync } = await import("node:child_process");
+  const outputPath = inputPath.replace(/\.wav$/, "-16k.wav");
+  execFileSync(
+    "ffmpeg",
+    ["-y", "-i", inputPath, "-ar", "16000", "-ac", "1", "-f", "wav", outputPath],
+    {
+      timeout: 10_000,
+    },
+  );
+  return outputPath;
+}
+
+// Whisper vocabulary biasing via two mechanisms:
+// 1. initial_prompt — style prompt that biases toward expected words
+// 2. hotwords — faster-whisper's beam search biasing (more reliable for proper nouns)
+const WHISPER_INITIAL_PROMPT =
+  "Claw, OpenClaw, Joswick, MakerHarness, Tiny, " +
+  "Qwen, vLLM, Whisper, Hindsight, " +
+  "Tailscale, Discord, Gemini, Sonnet, Anthropic, OpenRouter";
+
+const WHISPER_HOTWORDS =
+  "Claw OpenClaw Joswick MakerHarness Tiny " +
+  "Qwen vLLM Whisper Hindsight " +
+  "Tailscale Discord Gemini Sonnet Anthropic OpenRouter";
+
 async function transcribeAudio(params: {
   cfg: OpenClawConfig;
   agentId: string;
   filePath: string;
 }): Promise<string | undefined> {
-  const result = await getDiscordRuntime().mediaUnderstanding.transcribeAudioFile({
-    filePath: params.filePath,
-    cfg: params.cfg,
-    agentDir: resolveAgentDir(params.cfg, params.agentId),
-    mime: "audio/wav",
-  });
-  return result.text?.trim() || undefined;
+  let transcribeFilePath = params.filePath;
+  try {
+    transcribeFilePath = await convertToMono16k(params.filePath);
+  } catch (err) {
+    logger.warn(
+      `discord voice: ffmpeg conversion failed, using original: ${formatErrorMessage(err)}`,
+    );
+  }
+
+  // Call Whisper API directly to pass initial_prompt for vocabulary biasing
+  const sttBaseUrl =
+    params.cfg.channels?.discord?.voice?.stt?.baseUrl ?? "http://192.168.5.100:8097/v1";
+  const sttModel =
+    params.cfg.channels?.discord?.voice?.stt?.model ?? "Systran/faster-whisper-large-v3";
+
+  try {
+    const formData = new FormData();
+    const fileBuffer = await fs.readFile(transcribeFilePath);
+    formData.append(
+      "file",
+      new Blob([fileBuffer], { type: "audio/wav" }),
+      path.basename(transcribeFilePath),
+    );
+    formData.append("model", sttModel);
+    formData.append("language", "en");
+    formData.append("initial_prompt", WHISPER_INITIAL_PROMPT);
+    formData.append("hotwords", WHISPER_HOTWORDS);
+
+    const response = await fetch(`${sttBaseUrl}/audio/transcriptions`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      logger.warn(`discord voice: whisper API returned ${response.status}`);
+      return undefined;
+    }
+
+    const result = (await response.json()) as { text?: string };
+    const text = result.text?.trim() || undefined;
+    if (text && WHISPER_HALLUCINATIONS.has(text.toLowerCase().replace(/[.!?,]/g, ""))) {
+      logVoiceVerbose(`filtered whisper hallucination: "${text}"`);
+      return undefined;
+    }
+    return text;
+  } catch (err) {
+    logger.warn(`discord voice: transcription failed: ${formatErrorMessage(err)}`);
+    // Fallback to the standard media understanding pipeline
+    const result = await getDiscordRuntime().mediaUnderstanding.transcribeAudioFile({
+      filePath: transcribeFilePath,
+      cfg: params.cfg,
+      agentDir: resolveAgentDir(params.cfg, params.agentId),
+      mime: "audio/wav",
+    });
+    const text = result.text?.trim() || undefined;
+    if (text && WHISPER_HALLUCINATIONS.has(text.toLowerCase().replace(/[.!?,]/g, ""))) {
+      logVoiceVerbose(`filtered whisper hallucination: "${text}"`);
+      return undefined;
+    }
+    return text;
+  }
 }
 
 export class DiscordVoiceManager {
@@ -272,6 +364,115 @@ export class DiscordVoiceManager {
     if (id) {
       this.botUserId = id;
     }
+  }
+
+  private async postToTextChannel(entry: VoiceSessionEntry, content: string): Promise<void> {
+    const channelId = entry.textChannelId;
+    if (!channelId) return;
+    try {
+      const token = this.params.client.options.token;
+      const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bot ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content }),
+      });
+      if (!response.ok) {
+        logger.warn(`discord voice: post to text channel ${channelId} failed: ${response.status}`);
+      }
+    } catch (err) {
+      logger.warn(
+        `discord voice: failed to post to text channel ${channelId}: ${formatErrorMessage(err)}`,
+      );
+    }
+  }
+
+  private async sendTypingToTextChannel(entry: VoiceSessionEntry): Promise<void> {
+    const channelId = entry.textChannelId;
+    if (!channelId) return;
+    try {
+      const token = this.params.client.options.token;
+      await fetch(`https://discord.com/api/v10/channels/${channelId}/typing`, {
+        method: "POST",
+        headers: { Authorization: `Bot ${token}` },
+      });
+    } catch {
+      // typing indicator failures are non-critical
+    }
+  }
+
+  /**
+   * Check if a guild has an active voice session.
+   */
+  getActiveSession(guildId: string): VoiceSessionEntry | undefined {
+    return this.sessions.get(guildId);
+  }
+
+  /**
+   * Find a voice session by channel ID. Used to detect if a message
+   * was sent in a channel with an active voice session.
+   */
+  findSessionByChannelId(
+    channelId: string,
+  ): { guildId: string; session: VoiceSessionEntry } | undefined {
+    for (const [guildId, session] of this.sessions) {
+      if (session.channelId === channelId) {
+        return { guildId, session };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Play TTS for a text message that was sent in a channel with an active voice session.
+   * Called by the Discord message handler when it detects the message is in a voice channel.
+   */
+  async playTtsForTextReply(guildId: string, text: string): Promise<void> {
+    const entry = this.sessions.get(guildId);
+    if (!entry) return;
+
+    const { cfg: ttsCfg, resolved: ttsConfig } = resolveVoiceTtsConfig({
+      cfg: this.params.cfg,
+      override: this.params.discordConfig.voice?.tts,
+    });
+    const directive = parseTtsDirectives(text, ttsConfig.modelOverrides, {
+      cfg: ttsCfg,
+      providerConfigs: ttsConfig.providerConfigs,
+    });
+    const speakText = directive.overrides.ttsText ?? directive.cleanedText.trim();
+    if (!speakText) return;
+
+    logger.warn(`[voice-pipe] TTS for text reply: "${speakText.slice(0, 60)}"`);
+    const ttsResult = await getDiscordRuntime().tts.textToSpeech({
+      text: speakText,
+      cfg: ttsCfg,
+      channel: "discord",
+      overrides: directive.overrides,
+    });
+    if (!ttsResult.success || !ttsResult.audioPath) {
+      logger.warn(`[voice-pipe] TTS for text reply FAILED: ${ttsResult.error ?? "unknown"}`);
+      return;
+    }
+
+    const audioPath = ttsResult.audioPath;
+    this.enqueuePlayback(entry, async () => {
+      const voiceSdk = loadDiscordVoiceSdk();
+      const resource = voiceSdk.createAudioResource(audioPath);
+      entry.player.play(resource);
+      await voiceSdk
+        .entersState(entry.player, voiceSdk.AudioPlayerStatus.Playing, PLAYBACK_READY_TIMEOUT_MS)
+        .catch(() => undefined);
+      await voiceSdk
+        .entersState(entry.player, voiceSdk.AudioPlayerStatus.Idle, SPEAKING_READY_TIMEOUT_MS)
+        .catch(() => undefined);
+    });
+  }
+
+  private resolveTextChannelForVoice(voiceChannelId: string): string {
+    // Discord voice channels have built-in text chat — post directly to the voice channel ID
+    return voiceChannelId;
   }
 
   isEnabled() {
@@ -384,26 +585,14 @@ export class DiscordVoiceManager {
       decryptionFailureTolerance,
     });
 
-    try {
-      await voiceSdk.entersState(
-        connection,
-        voiceSdk.VoiceConnectionStatus.Ready,
-        VOICE_CONNECT_READY_TIMEOUT_MS,
-      );
-      logVoiceVerbose(`join: connected to guild ${guildId} channel ${channelId}`);
-    } catch (err) {
-      connection.destroy();
-      return { ok: false, message: `Failed to join voice channel: ${formatErrorMessage(err)}` };
-    }
-
+    // --- Set up entry, handlers, and event listeners BEFORE awaiting Ready ---
+    // Discord may send Speaking opcodes during the DAVE/encryption handshake
+    // (before Ready fires), especially when the user is already in the voice
+    // channel. If we bind the speaking handler after Ready, SpeakingMap
+    // consumes the event and transitions to "speaking" state before our handler
+    // exists, so "start" never re-emits and audio capture never triggers.
     const sessionChannelId = channelInfo?.id ?? channelId;
-    // Use the voice channel id as the session channel so text chat in the voice channel
-    // shares the same session as spoken audio.
-    if (sessionChannelId !== channelId) {
-      logVoiceVerbose(
-        `join: using session channel ${sessionChannelId} for voice channel ${channelId}`,
-      );
-    }
+    const textChannelId = this.resolveTextChannelForVoice(channelId);
     const route = resolveAgentRoute({
       cfg: this.params.cfg,
       channel: "discord",
@@ -413,7 +602,6 @@ export class DiscordVoiceManager {
     });
 
     const player = voiceSdk.createAudioPlayer();
-    connection.subscribe(player);
 
     let speakingHandler: ((userId: string) => void) | undefined;
     let disconnectedHandler: (() => Promise<void>) | undefined;
@@ -441,6 +629,7 @@ export class DiscordVoiceManager {
           ? channelInfo.name
           : undefined,
       sessionChannelId,
+      textChannelId,
       route,
       connection,
       player,
@@ -492,11 +681,33 @@ export class DiscordVoiceManager {
       logger.warn(`discord voice: playback error: ${formatErrorMessage(err)}`);
     };
 
+    // Bind event listeners early so we don't miss Speaking events during handshake
     connection.receiver.speaking.on("start", speakingHandler);
     connection.on(voiceSdk.VoiceConnectionStatus.Disconnected, disconnectedHandler);
     connection.on(voiceSdk.VoiceConnectionStatus.Destroyed, destroyedHandler);
     player.on("error", playerErrorHandler);
 
+    // Now wait for Ready — handlers are already bound
+    try {
+      await voiceSdk.entersState(
+        connection,
+        voiceSdk.VoiceConnectionStatus.Ready,
+        VOICE_CONNECT_READY_TIMEOUT_MS,
+      );
+      logVoiceVerbose(`join: connected to guild ${guildId} channel ${channelId}`);
+    } catch (err) {
+      // Clean up handlers on failure
+      entry.stop();
+      return { ok: false, message: `Failed to join voice channel: ${formatErrorMessage(err)}` };
+    }
+
+    if (sessionChannelId !== channelId) {
+      logVoiceVerbose(
+        `join: using session channel ${sessionChannelId} for voice channel ${channelId}`,
+      );
+    }
+
+    connection.subscribe(player);
     this.sessions.set(guildId, entry);
     return {
       ok: true,
@@ -540,6 +751,14 @@ export class DiscordVoiceManager {
       .catch((err) => logger.warn(`discord voice: processing failed: ${formatErrorMessage(err)}`));
   }
 
+  private resumePausedPlayback(entry: VoiceSessionEntry, reason: string) {
+    const voiceSdk = loadDiscordVoiceSdk();
+    if (entry.player.state.status === voiceSdk.AudioPlayerStatus.Paused) {
+      entry.player.unpause();
+      logVoiceVerbose(`resumed TTS (${reason}): guild ${entry.guildId}`);
+    }
+  }
+
   private enqueuePlayback(entry: VoiceSessionEntry, task: () => Promise<void>) {
     entry.playbackQueue = entry.playbackQueue
       .then(task)
@@ -554,14 +773,12 @@ export class DiscordVoiceManager {
       return;
     }
 
+    const voiceSdk = loadDiscordVoiceSdk();
+
     entry.activeSpeakers.add(userId);
     logVoiceVerbose(
       `capture start: guild ${entry.guildId} channel ${entry.channelId} user ${userId}`,
     );
-    const voiceSdk = loadDiscordVoiceSdk();
-    if (entry.player.state.status === voiceSdk.AudioPlayerStatus.Playing) {
-      entry.player.stop(true);
-    }
 
     const stream = entry.connection.receiver.subscribe(userId, {
       end: {
@@ -588,6 +805,13 @@ export class DiscordVoiceManager {
           `capture too short (${durationSeconds.toFixed(2)}s): guild ${entry.guildId} channel ${entry.channelId} user ${userId}`,
         );
         return;
+      }
+
+      // Segment is long enough — pause TTS while we run Whisper to check content
+      const wasPlaying = entry.player.state.status === voiceSdk.AudioPlayerStatus.Playing;
+      if (wasPlaying) {
+        entry.player.pause(true);
+        logVoiceVerbose(`paused TTS for whisper check: guild ${entry.guildId} user ${userId}`);
       }
       logVoiceVerbose(
         `capture ready (${durationSeconds.toFixed(2)}s): guild ${entry.guildId} channel ${entry.channelId} user ${userId}`,
@@ -640,98 +864,159 @@ export class DiscordVoiceManager {
       );
       return;
     }
+    // Step 1: Transcribe (post immediately, independent of LLM)
+    void this.sendTypingToTextChannel(entry);
+
+    logger.warn(`[voice-pipe] transcribing: ${wavPath} user=${userId}`);
+
     const transcript = await transcribeAudio({
       cfg: this.params.cfg,
       agentId: entry.route.agentId,
       filePath: wavPath,
     });
+
     if (!transcript) {
-      logVoiceVerbose(
-        `transcription empty: guild ${entry.guildId} channel ${entry.channelId} user ${userId}`,
-      );
+      logger.warn(`[voice-pipe] transcription empty: guild ${entry.guildId} user ${userId}`);
+      // Resume TTS if we paused it — Whisper found nothing useful
+      this.resumePausedPlayback(entry, "empty transcription");
       return;
     }
-    logVoiceVerbose(
-      `transcription ok (${transcript.length} chars): guild ${entry.guildId} channel ${entry.channelId}`,
+    logger.warn(
+      `[voice-pipe] transcription: "${transcript.slice(0, 100)}" (${transcript.length} chars)`,
     );
 
-    const prompt = speaker.label ? `${speaker.label}: ${transcript}` : transcript;
-
-    const result = await agentCommandFromIngress(
-      {
-        message: prompt,
-        sessionKey: entry.route.sessionKey,
-        agentId: entry.route.agentId,
-        messageChannel: "discord",
-        senderIsOwner: speaker.senderIsOwner,
-        allowModelOverride: false,
-        deliver: false,
-      },
-      this.params.runtime,
-    );
-
-    const replyText = (result.payloads ?? [])
-      .map((payload) => payload.text)
-      .filter((text) => typeof text === "string" && text.trim())
-      .join("\n")
-      .trim();
-
-    if (!replyText) {
-      logVoiceVerbose(
-        `reply empty: guild ${entry.guildId} channel ${entry.channelId} user ${userId}`,
-      );
-      return;
-    }
-    logVoiceVerbose(
-      `reply ok (${replyText.length} chars): guild ${entry.guildId} channel ${entry.channelId}`,
-    );
-
-    const { cfg: ttsCfg, resolved: ttsConfig } = resolveVoiceTtsConfig({
-      cfg: this.params.cfg,
-      override: this.params.discordConfig.voice?.tts,
-    });
-    const directive = parseTtsDirectives(replyText, ttsConfig.modelOverrides, {
-      cfg: ttsCfg,
-      providerConfigs: ttsConfig.providerConfigs,
-    });
-    const speakText = directive.overrides.ttsText ?? directive.cleanedText.trim();
-    if (!speakText) {
-      logVoiceVerbose(
-        `tts skipped (empty): guild ${entry.guildId} channel ${entry.channelId} user ${userId}`,
-      );
-      return;
+    // Real speech confirmed by Whisper — fully stop TTS
+    const voiceSdk2 = loadDiscordVoiceSdk();
+    if (
+      entry.player.state.status === voiceSdk2.AudioPlayerStatus.Playing ||
+      entry.player.state.status === voiceSdk2.AudioPlayerStatus.Paused
+    ) {
+      logVoiceVerbose(`interrupting TTS for real speech from user ${userId}`);
+      entry.player.stop(true);
     }
 
-    const ttsResult = await getDiscordRuntime().tts.textToSpeech({
-      text: speakText,
-      cfg: ttsCfg,
-      channel: "discord",
-      overrides: directive.overrides,
-    });
-    if (!ttsResult.success || !ttsResult.audioPath) {
-      logger.warn(`discord voice: TTS failed: ${ttsResult.error ?? "unknown error"}`);
-      return;
-    }
-    const audioPath = ttsResult.audioPath;
-    logVoiceVerbose(
-      `tts ok (${speakText.length} chars): guild ${entry.guildId} channel ${entry.channelId}`,
-    );
+    // Always post transcription immediately
+    void this.postToTextChannel(entry, `🎙️ <@${userId}>: ${transcript}`);
 
-    this.enqueuePlayback(entry, async () => {
-      logVoiceVerbose(
-        `playback start: guild ${entry.guildId} channel ${entry.channelId} file ${path.basename(audioPath)}`,
+    // Step 2: Start a typing loop that continues until we explicitly stop it
+    let typingActive = true;
+    const typingLoop = (async () => {
+      while (typingActive) {
+        await this.sendTypingToTextChannel(entry);
+        await new Promise((r) => setTimeout(r, 8_000));
+      }
+    })();
+
+    try {
+      // Step 3: Call the agent
+      const prompt = speaker.label ? `${speaker.label}: ${transcript}` : transcript;
+
+      const result = await agentCommandFromIngress(
+        {
+          message: prompt,
+          sessionKey: entry.route.sessionKey,
+          agentId: entry.route.agentId,
+          messageChannel: "discord",
+          senderIsOwner: speaker.senderIsOwner,
+          allowModelOverride: false,
+          deliver: false,
+          extraSystemPrompt:
+            "This is a VOICE conversation. Keep responses concise — 1-3 short sentences max. " +
+            "The user is listening, not reading. Be direct and conversational. " +
+            "Do NOT use markdown, bullet points, code blocks, or long explanations. " +
+            "Do NOT use <think> tags or thinking blocks. " +
+            "If a task will take time, briefly acknowledge and do it — don't narrate every step.",
+        },
+        this.params.runtime,
       );
-      const voiceSdk = loadDiscordVoiceSdk();
-      const resource = voiceSdk.createAudioResource(audioPath);
-      entry.player.play(resource);
-      await voiceSdk
-        .entersState(entry.player, voiceSdk.AudioPlayerStatus.Playing, PLAYBACK_READY_TIMEOUT_MS)
-        .catch(() => undefined);
-      await voiceSdk
-        .entersState(entry.player, voiceSdk.AudioPlayerStatus.Idle, SPEAKING_READY_TIMEOUT_MS)
-        .catch(() => undefined);
-      logVoiceVerbose(`playback done: guild ${entry.guildId} channel ${entry.channelId}`);
-    });
+
+      // Extract reply text from payloads, falling back to raw result text.
+      // Some models (Gemini) output <think> blocks without closing tags,
+      // which causes empty payloads. Handle this by stripping think blocks ourselves.
+      let replyText = (result.payloads ?? [])
+        .map((payload) => payload.text)
+        .filter((text) => typeof text === "string" && text.trim())
+        .join("\n")
+        .trim();
+
+      if (!replyText) {
+        // Fallback: check if payloads have text buried in think blocks
+        const rawTexts = (result.payloads ?? []).map((payload) => payload.text ?? "").join("\n");
+        if (rawTexts.includes("<think>")) {
+          replyText = rawTexts
+            .replace(/<think>[\s\S]*?<\/think>/g, "")
+            .replace(/<think>[\s\S]*/g, "")
+            .trim();
+          if (replyText) {
+            logger.warn(`[voice-pipe] recovered reply by stripping think blocks`);
+          }
+        }
+      }
+
+      if (!replyText) {
+        logger.warn(`[voice-pipe] agent returned no reply: guild ${entry.guildId} user ${userId}`);
+        return;
+      }
+      logger.warn(
+        `[voice-pipe] agent reply: "${replyText.slice(0, 100)}" (${replyText.length} chars)`,
+      );
+
+      // Post agent's reply to text channel immediately
+      void this.postToTextChannel(entry, `🔊 **Claw:** ${replyText}`);
+
+      // Step 4: Synthesize TTS
+      const { cfg: ttsCfg, resolved: ttsConfig } = resolveVoiceTtsConfig({
+        cfg: this.params.cfg,
+        override: this.params.discordConfig.voice?.tts,
+      });
+      const directive = parseTtsDirectives(replyText, ttsConfig.modelOverrides, {
+        cfg: ttsCfg,
+        providerConfigs: ttsConfig.providerConfigs,
+      });
+      const speakText = directive.overrides.ttsText ?? directive.cleanedText.trim();
+      if (!speakText) {
+        return;
+      }
+
+      logger.warn(
+        `[voice-pipe] TTS synthesizing: provider=${ttsConfig.provider ?? "default"} text="${speakText.slice(0, 60)}"`,
+      );
+      const ttsResult = await getDiscordRuntime().tts.textToSpeech({
+        text: speakText,
+        cfg: ttsCfg,
+        channel: "discord",
+        overrides: directive.overrides,
+      });
+      if (!ttsResult.success || !ttsResult.audioPath) {
+        logger.warn(`[voice-pipe] TTS FAILED: ${ttsResult.error ?? "unknown error"}`);
+        return;
+      }
+      const audioPath = ttsResult.audioPath;
+
+      // Step 5: Play back — typing continues during playback
+      await new Promise<void>((resolve) => {
+        this.enqueuePlayback(entry, async () => {
+          const voiceSdk = loadDiscordVoiceSdk();
+          const resource = voiceSdk.createAudioResource(audioPath);
+          entry.player.play(resource);
+          await voiceSdk
+            .entersState(
+              entry.player,
+              voiceSdk.AudioPlayerStatus.Playing,
+              PLAYBACK_READY_TIMEOUT_MS,
+            )
+            .catch(() => undefined);
+          await voiceSdk
+            .entersState(entry.player, voiceSdk.AudioPlayerStatus.Idle, SPEAKING_READY_TIMEOUT_MS)
+            .catch(() => undefined);
+          resolve();
+        });
+      });
+    } finally {
+      // Stop typing loop after everything completes (including TTS playback)
+      typingActive = false;
+      await typingLoop.catch(() => undefined);
+    }
   }
 
   private handleReceiveError(entry: VoiceSessionEntry, err: unknown) {
