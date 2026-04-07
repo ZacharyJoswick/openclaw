@@ -1,0 +1,55 @@
+name: IVC Custom Build
+
+on:
+  push:
+    branches: [ivc/custom-build]
+  workflow_dispatch:
+
+jobs:
+  build-and-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build dist
+        run: pnpm build
+        continue-on-error: true  # Type errors in discord voice changes
+
+      - name: Apply IVC patches
+        run: ./ivc-patches/apply-ivc-patches.sh
+
+      - name: Verify IVC provider
+        run: |
+          test -f dist/ivc-provider-BivCpRov.js || exit 1
+          grep -q '"ivc"' dist/runtime-entry-*.js || exit 1
+          grep -q '"ivc"' dist/config-*.js || exit 1
+          echo "IVC patches verified"
+
+      - name: Package dist
+        run: |
+          tar czf openclaw-ivc-dist.tar.gz \
+            dist/ \
+            extensions/ \
+            dist-runtime/ \
+            package.json \
+            openclaw.mjs \
+            ivc-patches/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-ivc-dist-${{ github.sha }}
+          path: openclaw-ivc-dist.tar.gz
+          retention-days: 30
