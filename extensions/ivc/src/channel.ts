@@ -6,33 +6,26 @@
  * inbound pipeline, sharing the Discord channel session.
  */
 import {
-  buildChannelConfigSchema,
   DEFAULT_ACCOUNT_ID,
-  getChatChannelMeta,
+  emptyPluginConfigSchema,
   type ChannelPlugin,
-  type OpenClawConfig,
 } from "openclaw/plugin-sdk";
 import {
-  IvcConfigSchema,
   resolveIvcAccount,
   type ResolvedIvcAccount,
 } from "./config.js";
 import { startIvcGateway } from "./gateway.js";
 
-const meta = getChatChannelMeta("ivc");
-
 export const ivcPlugin: ChannelPlugin<ResolvedIvcAccount> = {
   id: "ivc",
   meta: {
-    // getChatChannelMeta may not have ivc registered — provide fallback
-    id: meta?.id ?? "ivc",
-    label: meta?.label ?? "IVC",
-    selectionLabel: meta?.selectionLabel ?? "Intelligent Voice Controller",
-    docsPath: meta?.docsPath ?? "plugins/ivc",
+    id: "ivc",
+    label: "IVC",
+    selectionLabel: "Intelligent Voice Controller",
+    docsPath: "plugins/ivc",
     blurb:
-      meta?.blurb ??
       "Voice transcription channel for the Intelligent Voice Controller",
-    order: meta?.order ?? 999,
+    order: 999,
   },
   capabilities: {
     // Voice transcriptions inject into group (channel) sessions
@@ -40,7 +33,7 @@ export const ivcPlugin: ChannelPlugin<ResolvedIvcAccount> = {
     blockStreaming: true,
   },
   reload: { configPrefixes: ["channels.ivc"] },
-  configSchema: buildChannelConfigSchema(IvcConfigSchema),
+  configSchema: emptyPluginConfigSchema(),
   config: {
     listAccountIds: () => [DEFAULT_ACCOUNT_ID],
     resolveAccount: (cfg, accountId) =>

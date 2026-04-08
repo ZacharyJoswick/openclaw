@@ -44,7 +44,13 @@ export function resolveIvcAccount(params: {
   accountId?: string | null;
 }): ResolvedIvcAccount {
   const ivcSection = (params.cfg as Record<string, unknown>).channels?.ivc ?? {};
-  const config = ivcSection as IvcConfig;
+  const parsed = IvcConfigSchema.safeParse(ivcSection);
+  if (!parsed.success) {
+    throw new Error(
+      `Invalid channels.ivc config: ${parsed.error.issues.map((i) => i.message).join(", ")}`,
+    );
+  }
+  const config = parsed.data;
   const accountId = params.accountId ?? DEFAULT_ACCOUNT_ID;
 
   return {

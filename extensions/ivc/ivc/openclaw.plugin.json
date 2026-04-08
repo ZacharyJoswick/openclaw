@@ -1,9 +1,0 @@
-{
-  "id": "ivc",
-  "channels": ["ivc"],
-  "configSchema": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {}
-  }
-}

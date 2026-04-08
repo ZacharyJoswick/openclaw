@@ -9,6 +9,14 @@
   "openclaw": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "channel": {
+      "id": "ivc",
+      "label": "IVC",
+      "selectionLabel": "Intelligent Voice Controller",
+      "docsPath": "plugins/ivc",
+      "blurb": "Voice transcription channel for the Intelligent Voice Controller",
+      "order": 999
+    }
   }
 }
