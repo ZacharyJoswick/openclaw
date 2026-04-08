@@ -1,0 +1,22 @@
+{
+  "name": "@openclaw/ivc",
+  "version": "0.1.0",
+  "description": "OpenClaw IVC (Intelligent Voice Controller) channel plugin",
+  "type": "module",
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "ivc",
+      "label": "IVC",
+      "selectionLabel": "Intelligent Voice Controller",
+      "docsPath": "plugins/ivc",
+      "blurb": "Voice transcription channel for the Intelligent Voice Controller",
+      "order": 999
+    }
+  }
+}
