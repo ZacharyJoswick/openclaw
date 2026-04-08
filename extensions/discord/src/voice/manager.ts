@@ -425,51 +425,6 @@ export class DiscordVoiceManager {
     return undefined;
   }
 
-  /**
-   * Play TTS for a text message that was sent in a channel with an active voice session.
-   * Called by the Discord message handler when it detects the message is in a voice channel.
-   */
-  async playTtsForTextReply(guildId: string, text: string): Promise<void> {
-    const entry = this.sessions.get(guildId);
-    if (!entry) return;
-
-    const { cfg: ttsCfg, resolved: ttsConfig } = resolveVoiceTtsConfig({
-      cfg: this.params.cfg,
-      override: this.params.discordConfig.voice?.tts,
-    });
-    const directive = parseTtsDirectives(text, ttsConfig.modelOverrides, {
-      cfg: ttsCfg,
-      providerConfigs: ttsConfig.providerConfigs,
-    });
-    const speakText = directive.overrides.ttsText ?? directive.cleanedText.trim();
-    if (!speakText) return;
-
-    logger.warn(`[voice-pipe] TTS for text reply: "${speakText.slice(0, 60)}"`);
-    const ttsResult = await getDiscordRuntime().tts.textToSpeech({
-      text: speakText,
-      cfg: ttsCfg,
-      channel: "discord",
-      overrides: directive.overrides,
-    });
-    if (!ttsResult.success || !ttsResult.audioPath) {
-      logger.warn(`[voice-pipe] TTS for text reply FAILED: ${ttsResult.error ?? "unknown"}`);
-      return;
-    }
-
-    const audioPath = ttsResult.audioPath;
-    this.enqueuePlayback(entry, async () => {
-      const voiceSdk = loadDiscordVoiceSdk();
-      const resource = voiceSdk.createAudioResource(audioPath);
-      entry.player.play(resource);
-      await voiceSdk
-        .entersState(entry.player, voiceSdk.AudioPlayerStatus.Playing, PLAYBACK_READY_TIMEOUT_MS)
-        .catch(() => undefined);
-      await voiceSdk
-        .entersState(entry.player, voiceSdk.AudioPlayerStatus.Idle, SPEAKING_READY_TIMEOUT_MS)
-        .catch(() => undefined);
-    });
-  }
-
   private resolveTextChannelForVoice(voiceChannelId: string): string {
     // Discord voice channels have built-in text chat — post directly to the voice channel ID
     return voiceChannelId;
